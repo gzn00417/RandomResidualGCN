@@ -16,31 +16,17 @@ def calc_trans_e_mse_loss(triples, batch_size, embedding_dim):
 
 
 def calc_tran_e_margin_ranking_loss(triples, values, margin):
-    h, r, t = triples
-    pos = values.ge(0)
-    neg = values.le(0)
-
-    # pos
-    pos_h = h[pos]
-    pos_r = r[pos]
-    pos_t = t[pos]
-
-    # neg
-    neg_h = h[neg]
-    neg_r = r[neg]
-    neg_t = t[neg]
+    pos_triples, pos_len = get_head_relation_tail(triples, values, 'positive')
+    neg_triples, neg_len = get_head_relation_tail(triples, values, 'negative')
 
     # alignment
-    pos_len = len(pos_h)
-    neg_len = len(neg_h)
     if pos_len > neg_len:
-        neg_h = torch.cat((neg_h.repeat((pos_len // neg_len), 1), neg_h[:pos_len % neg_len]))
-        neg_r = torch.cat((neg_r.repeat((pos_len // neg_len), 1), neg_r[:pos_len % neg_len]))
-        neg_t = torch.cat((neg_t.repeat((pos_len // neg_len), 1), neg_t[:pos_len % neg_len]))
+        neg_triples = align(neg_triples, neg_len, pos_len)
     elif neg_len > pos_len:
-        pos_h = torch.cat((pos_h.repeat((neg_len // pos_len), 1), pos_h[:neg_len % pos_len]))
-        pos_r = torch.cat((pos_r.repeat((neg_len // pos_len), 1), pos_r[:neg_len % pos_len]))
-        pos_t = torch.cat((pos_t.repeat((neg_len // pos_len), 1), pos_t[:neg_len % pos_len]))
+        pos_triples = align(pos_triples, pos_len, neg_len)
+
+    pos_h, pos_r, pos_t = pos_triples
+    neg_h, neg_r, neg_t = neg_triples
 
     # norm
     pos_norm = torch.norm(pos_h + pos_r - pos_t, p=1, dim=1)
@@ -56,14 +42,38 @@ def calc_tran_e_margin_ranking_loss(triples, values, margin):
     return margin_ranking_loss
 
 
-def calc_conv_loss(model, triples, conv_output, batch_size, lmbda: float = args.lmbda):
-    h, r, t = triples
+def calc_conv_loss(model, pos_triples, conv_output, batch_size, lmbda: float = args.lmbda):
+    h, r, t = pos_triples
     l2_reg = torch.mean(h ** 2) + torch.mean(t ** 2) + torch.mean(r ** 2)
-    for W in model.conv_layer.parameters():
+    for W in model.model.conv_layer.parameters():
         l2_reg = l2_reg + W.norm(2)
-    for W in model.fc_layer.parameters():
+    for W in model.model.fc_layer.parameters():
         l2_reg = l2_reg + W.norm(2)
-    return torch.mean(model.criterion(conv_output.view(-1) * torch.ones(batch_size))) + lmbda * l2_reg
+    return torch.mean(model.model.criterion(conv_output.cpu().view(-1) * torch.ones(batch_size))) + lmbda * l2_reg
+
+
+# ----------------------------For Evaluation----------------------------
+
+def evaluation(rank, model, pos_triples_idx, pos_len, entity_embeddings, relation_embeddings, num_entity):
+    h, r, t = pos_triples_idx
+    hits = 0
+    total_rank = 0.0
+    total_reciprocal_rank = 0.0
+    all_entity_embeddings = entity_embeddings(torch.arange(num_entity, device=h.device))
+    for head, relation, tail in zip(h, r, t):
+        true_tail_embedding = entity_embeddings(head) + relation_embeddings(relation)
+        distances = torch.norm(all_entity_embeddings - true_tail_embedding.repeat(num_entity, 1), dim=1)
+        sorted_indices = torch.argsort(distances, descending=False)
+        top = sorted_indices[:int(num_entity * rank)]
+        if tail in top:
+            hits += 1
+        current_rank = int((sorted_indices == tail).nonzero()) + 1
+        total_rank += current_rank
+        total_reciprocal_rank += 1.0 / current_rank
+    accuracy_hits = hits / pos_len
+    mean_rank = total_rank / pos_len
+    mean_reciprocal_rank = total_reciprocal_rank / pos_len
+    return accuracy_hits, mean_rank, mean_reciprocal_rank
 
 
 # ----------------------------For Dataset----------------------------
@@ -120,3 +130,25 @@ def sparse_mx_to_torch_sparse_tensor(sparse_mx):  # 把一个sparse matrix转为
     values = torch.from_numpy(sparse_mx.data)
     shape = torch.Size(sparse_mx.shape)
     return torch.sparse.FloatTensor(indices, values, shape)
+
+
+# ----------------------------For Others----------------------------
+
+def get_head_relation_tail(triples, values, type: str in ['positive', 'negative']):
+    h, r, t = triples
+    if type == 'positive':
+        idx = values.ge(0)
+    elif type == 'negative':
+        idx = values.le(0)
+    else:
+        raise Exception
+    h, r, t = h[idx], r[idx], t[idx]
+    return (h, r, t), len(h)
+
+
+def align(triples, src_len, tgt_len):
+    h, r, t = triples
+    h = torch.cat((h.repeat((tgt_len // src_len), 1), h[:tgt_len % src_len]))
+    r = torch.cat((r.repeat((tgt_len // src_len), 1), r[:tgt_len % src_len]))
+    t = torch.cat((t.repeat((tgt_len // src_len), 1), t[:tgt_len % src_len]))
+    return (h, r, t)

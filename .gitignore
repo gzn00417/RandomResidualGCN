@@ -3,3 +3,6 @@
 
 # log
 /log/*
+
+# .vscode
+.vscode

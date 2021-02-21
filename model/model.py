@@ -6,6 +6,7 @@ import numpy as np
 import random
 
 from model.layer import GCN
+from config.args import args
 
 
 class GCNLayersRandomLeaps(nn.Module):
@@ -97,7 +98,7 @@ class ConvKB(nn.Module):
         self.conv_layer = nn.Conv2d(in_channels, out_channels, (1, 3))
         self.dropout = nn.Dropout(drop_prob)
         self.non_linearity = nn.ReLU()
-        self.fc_layer = nn.Linear((50 - 1 + 1) * out_channels, 1)
+        self.fc_layer = nn.Linear((args.embedding_dim - 1 + 1) * out_channels, 1)
         self.criterion = nn.Softplus()
 
     def forward(self, conv_input):

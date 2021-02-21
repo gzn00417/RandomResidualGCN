@@ -8,7 +8,7 @@ import torch.nn as nn
 
 class WN18Dataset(Dataset):
 
-    def __init__(self, data_path: str, dataset_name: str in ['train', 'valid', 'test'], entity2id: dict, relation2id: dict):
+    def __init__(self, data_path: str, dataset_name: str in ['train', 'valid', 'test'], entity2id: dict, relation2id: dict, has_negative_data: bool):
         super(WN18Dataset, self).__init__()
         self.data_path = os.path.join(data_path, dataset_name + '.txt')
         self.entity2id = entity2id
@@ -18,7 +18,8 @@ class WN18Dataset(Dataset):
         self.edges = []# [{'h': h, 'r': r, 't': t, 'v': v}]
         self.edges_map = dict(zip(self.entities, [defaultdict(None) for _ in self.entities]))  # key1: h, key2: r, value: t
         self.load_pos_data()
-        self.generate_neg_data()
+        if has_negative_data:
+            self.generate_neg_data()
         self.num_triple = len(self.edges)
 
     def __getitem__(self, index):

@@ -11,7 +11,7 @@ from pytorch_lightning.loggers import TensorBoardLogger
 from config.args import args
 from data.dataset import WN18Dataset
 from model.model import GCNLayersRandomLeaps, ConvKB
-from util.util import read_id, generate_adj, calc_trans_e_mse_loss, calc_tran_e_margin_ranking_loss, calc_conv_loss
+from util.util import read_id, generate_adj, calc_trans_e_mse_loss, calc_tran_e_margin_ranking_loss, calc_conv_loss, get_head_relation_tail, evaluation
 
 
 class PreTrainGCN(pl.LightningModule):
@@ -21,7 +21,7 @@ class PreTrainGCN(pl.LightningModule):
         self.model = GCNLayersRandomLeaps(
             n_feat=args.embedding_dim,
             dropout=args.dropout
-        ).to(device=self.device)
+        )
 
     def forward(self, x, adj):
         return self.model(x, adj)
@@ -33,12 +33,12 @@ class PreTrainGCN(pl.LightningModule):
         self.num_entity = len(self.entity2id)
         self.num_relation = len(self.relation2id)
         # train / validation / test dataset
-        self.train_dataset = WN18Dataset(data_path=self.data_path, dataset_name='train', entity2id=self.entity2id, relation2id=self.relation2id)
-        self.val_dataset = WN18Dataset(data_path=self.data_path, dataset_name='valid', entity2id=self.entity2id, relation2id=self.relation2id)
-        self.test_dataset = WN18Dataset(data_path=self.data_path, dataset_name='test', entity2id=self.entity2id, relation2id=self.relation2id)
+        self.train_dataset = WN18Dataset(data_path=self.data_path, dataset_name='train', entity2id=self.entity2id, relation2id=self.relation2id, has_negative_data=True)
+        self.val_dataset = WN18Dataset(data_path=self.data_path, dataset_name='valid', entity2id=self.entity2id, relation2id=self.relation2id, has_negative_data=False)
+        self.test_dataset = WN18Dataset(data_path=self.data_path, dataset_name='test', entity2id=self.entity2id, relation2id=self.relation2id, has_negative_data=False)
         # init entity / relation embeddings
-        self.entity_embeddings = nn.Embedding(self.num_entity, args.embedding_dim).to(device=self.device)
-        self.relation_embeddings = nn.Embedding(self.num_relation, args.embedding_dim).to(device=self.device)
+        self.entity_embeddings = nn.Embedding(self.num_entity, args.embedding_dim)
+        self.relation_embeddings = nn.Embedding(self.num_relation, args.embedding_dim)
         # init train / validation / test adjacency matrix
         self.train_adj = generate_adj(data=self.train_dataset.data, num_entity=self.num_entity)
         self.val_adj = generate_adj(data=self.val_dataset.data, num_entity=self.num_entity)
@@ -60,11 +60,9 @@ class PreTrainGCN(pl.LightningModule):
 
     def training_step(self, batch, batch_idx):
         h, r, t, v = batch
-        self(self.entity_embeddings(torch.arange(self.num_entity).to(device=self.device)), self.train_adj)
+        self(self.entity_embeddings(torch.arange(self.num_entity, device=self.device)), self.train_adj)
 
         # mse_loss = calc_trans_e_mse_loss(
-        #     entity_embeddings=self.entity_embeddings,
-        #     relation_embeddings=self.relation_embeddings,
         #     triples=(self.entity_embeddings(h), self.relation_embeddings(r), self.entity_embeddings(h)),
         #     batch_size=len(r),
         #     embedding_dim=args.embedding_dim,
@@ -79,14 +77,18 @@ class PreTrainGCN(pl.LightningModule):
             margin=args.margin,
         ).to(device=self.device)
 
-        if hasattr(torch.cuda, 'empty_cache'):
-            torch.cuda.empty_cache()
-
-        self.log('train_loss', margin_ranking_loss, on_epoch=True, prog_bar=True, logger=True)
+        # self.log('train_loss', mse_loss, on_step=False, on_epoch=True, prog_bar=True, logger=True)
+        # return {'loss': mse_loss}
+        self.log('train_loss', margin_ranking_loss, on_step=False, on_epoch=True, prog_bar=True, logger=True)
         return {'loss': margin_ranking_loss}
 
     def validation_step(self, batch, batch_idx):
-        pass
+        h, r, t, v = batch
+        accuracy_hits, mean_rank, mean_reciprocal_rank = evaluation(args.hits_scale, self, (h, r, t), len(v), self.entity_embeddings, self.relation_embeddings, self.num_entity)
+        self.log('acc', accuracy_hits, on_epoch=True, prog_bar=True, logger=True)
+        self.log('rank', mean_rank, on_epoch=True, prog_bar=True, logger=True)
+        self.log('reciprocal_rank', mean_reciprocal_rank, on_epoch=True, prog_bar=True, logger=True)
+        return {'acc': accuracy_hits, 'rank': mean_rank, 'reciprocal_rank': mean_reciprocal_rank}
 
     def test_step(self, batch, batch_idx):
         pass
@@ -101,7 +103,7 @@ class TrainConvKB(pl.LightningModule):
             in_channels=1,
             out_channels=3,
             drop_prob=args.dropout,
-        ).to(device=self.device)
+        )
 
     def forward(self, x):
         return self.model(x)
@@ -113,9 +115,9 @@ class TrainConvKB(pl.LightningModule):
         self.num_entity = len(self.entity2id)
         self.num_relation = len(self.relation2id)
         # train / validation / test dataset
-        self.train_dataset = WN18Dataset(data_path=self.data_path, dataset_name='train', entity2id=self.entity2id, relation2id=self.relation2id)
-        self.val_dataset = WN18Dataset(data_path=self.data_path, dataset_name='valid', entity2id=self.entity2id, relation2id=self.relation2id)
-        self.test_dataset = WN18Dataset(data_path=self.data_path, dataset_name='test', entity2id=self.entity2id, relation2id=self.relation2id)
+        self.train_dataset = WN18Dataset(data_path=self.data_path, dataset_name='train', entity2id=self.entity2id, relation2id=self.relation2id, has_negative_data=False)
+        self.val_dataset = WN18Dataset(data_path=self.data_path, dataset_name='valid', entity2id=self.entity2id, relation2id=self.relation2id, has_negative_data=False)
+        self.test_dataset = WN18Dataset(data_path=self.data_path, dataset_name='test', entity2id=self.entity2id, relation2id=self.relation2id, has_negative_data=False)
         # init entity / relation embeddings
         self.entity_embeddings = nn.Embedding(self.num_entity, args.embedding_dim)
         self.relation_embeddings = nn.Embedding(self.num_relation, args.embedding_dim)
@@ -147,13 +149,18 @@ class TrainConvKB(pl.LightningModule):
             ),
             dim=1,
         )
-        conv_output = self(conv_input.to(device=self.device))
-        conv_loss = calc_conv_loss(self.model, batch.to(device=self.device), conv_output, len(e1))
-        self.log('train_loss', conv_loss, on_epoch=True, prog_bar=True, logger=True)
+        conv_output = self(conv_input)
+        conv_loss = calc_conv_loss(self, (h, r, t), conv_output, len(h)).to(device=self.device)
+        self.log('train_loss', conv_loss, on_step=False, on_epoch=True, prog_bar=False, logger=True)
         return {'loss': conv_loss}
 
     def validation_step(self, batch, batch_idx):
-        pass
+        h, r, t, v = batch
+        accuracy_hits, mean_rank, mean_reciprocal_rank = evaluation(args.hits_scale, self, (h, r, t), len(v), self.entity_embeddings, self.relation_embeddings, self.num_entity)
+        self.log('acc', accuracy_hits, on_epoch=True, prog_bar=True, logger=True)
+        self.log('rank', mean_rank, on_epoch=True, prog_bar=True, logger=True)
+        self.log('reciprocal_rank', mean_reciprocal_rank, on_epoch=True, prog_bar=True, logger=True)
+        return {'acc': accuracy_hits, 'rank': mean_rank, 'reciprocal_rank': mean_reciprocal_rank}
 
     def test_step(self, batch, batch_idx):
         pass
@@ -171,4 +178,4 @@ if __name__ == '__main__':
             name='log',
         )
     )
-    trainer.fit(model1)
+    trainer.fit(model2)
