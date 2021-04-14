@@ -1,79 +1,9 @@
+import os
 import torch
-import torch.nn.functional as F
 import numpy as np
 import scipy.sparse as sp
 
 from config.args import args
-
-
-# ----------------------------For Losses----------------------------
-
-def calc_trans_e_mse_loss(triples, batch_size, embedding_dim):
-    h, r, t = triples
-    trans_e_diff = h + r - t
-    mse_loss = F.mse_loss(trans_e_diff.cpu(), torch.zeros(batch_size, embedding_dim))
-    return mse_loss
-
-
-def calc_tran_e_margin_ranking_loss(triples, values, margin):
-    pos_triples, pos_len = get_head_relation_tail(triples, values, 'positive')
-    neg_triples, neg_len = get_head_relation_tail(triples, values, 'negative')
-
-    # alignment
-    if pos_len > neg_len:
-        neg_triples = align(neg_triples, neg_len, pos_len)
-    elif neg_len > pos_len:
-        pos_triples = align(pos_triples, pos_len, neg_len)
-
-    pos_h, pos_r, pos_t = pos_triples
-    neg_h, neg_r, neg_t = neg_triples
-
-    # norm
-    pos_norm = torch.norm(pos_h + pos_r - pos_t, p=1, dim=1)
-    neg_norm = torch.norm(neg_h + neg_r - neg_t, p=1, dim=1)
-
-    # margin ranking loss
-    margin_ranking_loss = F.margin_ranking_loss(
-        pos_norm.cpu(),
-        neg_norm.cpu(),
-        torch.ones(len(pos_norm), requires_grad=True),
-        margin=margin
-    )
-    return margin_ranking_loss
-
-
-def calc_conv_loss(model, pos_triples, conv_output, batch_size, lmbda: float = args.lmbda):
-    h, r, t = pos_triples
-    l2_reg = torch.mean(h ** 2) + torch.mean(t ** 2) + torch.mean(r ** 2)
-    for W in model.model.conv_layer.parameters():
-        l2_reg = l2_reg + W.norm(2)
-    for W in model.model.fc_layer.parameters():
-        l2_reg = l2_reg + W.norm(2)
-    return torch.mean(model.model.criterion(conv_output.cpu().view(-1) * torch.ones(batch_size))) + lmbda * l2_reg
-
-
-# ----------------------------For Evaluation----------------------------
-
-def evaluation(rank, model, pos_triples_idx, pos_len, entity_embeddings, relation_embeddings, num_entity):
-    h, r, t = pos_triples_idx
-    hits = 0
-    total_rank = 0.0
-    total_reciprocal_rank = 0.0
-    all_entity_embeddings = entity_embeddings(torch.arange(num_entity, device=h.device))
-    for head, relation, tail in zip(h, r, t):
-        true_tail_embedding = entity_embeddings(head) + relation_embeddings(relation)
-        distances = torch.norm(all_entity_embeddings - true_tail_embedding.repeat(num_entity, 1), dim=1)
-        sorted_indices = torch.argsort(distances, descending=False)
-        top = sorted_indices[:int(num_entity * rank)]
-        if tail in top:
-            hits += 1
-        current_rank = int((sorted_indices == tail).nonzero()) + 1
-        total_rank += current_rank
-        total_reciprocal_rank += 1.0 / current_rank
-    accuracy_hits = hits / pos_len
-    mean_rank = total_rank / pos_len
-    mean_reciprocal_rank = total_reciprocal_rank / pos_len
-    return accuracy_hits, mean_rank, mean_reciprocal_rank
 
 
 # ----------------------------For Dataset----------------------------
@@ -152,3 +82,19 @@ def align(triples, src_len, tgt_len):
     r = torch.cat((r.repeat((tgt_len // src_len), 1), r[:tgt_len % src_len]))
     t = torch.cat((t.repeat((tgt_len // src_len), 1), t[:tgt_len % src_len]))
     return (h, r, t)
+
+
+def find_last_file(target_dir):
+    lists = os.listdir(target_dir)
+    lists.sort(key=lambda fn: os.path.getmtime(target_dir + "\\" + fn))
+    last_file = os.path.join(target_dir, lists[-1])
+    return last_file
+
+
+def get_last_log_folder():
+    return find_last_file(os.path.join('.', 'log'))
+
+
+def get_checkpoint(version: int = -1):
+    log_folder = get_last_log_folder() if version < 0 else os.path.join('.', 'log', 'version_' + str(version))
+    return find_last_file(os.path.join(log_folder, 'checkpoints'))

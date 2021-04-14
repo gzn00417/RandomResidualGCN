@@ -3,19 +3,18 @@ from collections import defaultdict
 import random
 import torch
 from torch.utils.data import Dataset
-import torch.nn as nn
 
 
-class WN18Dataset(Dataset):
+class KGDataset(Dataset):
 
     def __init__(self, data_path: str, dataset_name: str in ['train', 'valid', 'test'], entity2id: dict, relation2id: dict, has_negative_data: bool):
-        super(WN18Dataset, self).__init__()
+        super().__init__()
         self.data_path = os.path.join(data_path, dataset_name + '.txt')
         self.entity2id = entity2id
         self.relation2id = relation2id
         self.entities = list(self.entity2id.values())
         self.relations = list(self.relation2id.values())
-        self.edges = []# [{'h': h, 'r': r, 't': t, 'v': v}]
+        self.edges = []  # [{'h': h, 'r': r, 't': t, 'v': v}]
         self.edges_map = dict(zip(self.entities, [defaultdict(None) for _ in self.entities]))  # key1: h, key2: r, value: t
         self.load_pos_data()
         if has_negative_data:
